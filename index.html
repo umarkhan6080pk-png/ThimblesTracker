@@ -1,0 +1,117 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<title>ThimblesTracker</title>
+<style>
+:root{color-scheme:dark;font-family:system-ui,-apple-system,Segoe UI,sans-serif}
+*{box-sizing:border-box} body{margin:0;background:#10141c;color:#f4f6fa;padding:18px}
+main{max-width:720px;margin:auto} h1{font-size:25px;margin:8px 0 4px}
+p{color:#b8c2d1;line-height:1.45}.panel{background:#1a2230;border:1px solid #344155;border-radius:16px;padding:15px;margin:14px 0}
+input,button{font:inherit} input[type=file]{width:100%;padding:12px;background:#111824;border-radius:10px;color:#fff}
+button{border:0;border-radius:11px;background:#2877e7;color:white;padding:12px 16px;font-weight:700}
+video{width:100%;max-height:65vh;background:#05070a;border-radius:12px}
+.row{display:flex;gap:10px;flex-wrap:wrap;align-items:center}.result{font-size:25px;font-weight:800;margin:6px 0}.muted{font-size:13px;color:#9ba9bb}
+#status{color:#a8c7ff} #log{max-height:160px;overflow:auto;font-size:14px}
+</style>
+</head>
+<body><main>
+<h1>🎯 ThimblesTracker</h1>
+<p>Choose a recorded thimbles-game video. The prototype looks for a bright red ball and estimates its screen position.</p>
+<section class="panel">
+<label for="file"><b>Select video</b></label>
+<input id="file" type="file" accept="video/*">
+<div style="margin-top:12px"><video id="video" controls playsinline></video></div>
+<div class="row" style="margin-top:12px">
+<button id="scan">Analyze video</button><button id="clear" style="background:#455266">Clear results</button>
+</div>
+<p id="status" class="muted">Waiting for a video.</p>
+</section>
+<section class="panel">
+<div class="muted">LATEST DETECTION</div>
+<div id="result" class="result">No result yet</div>
+<div id="detail" class="muted">The app will show Left, Middle, or Right when it detects a likely red ball.</div>
+</section>
+<section class="panel">
+<b>Detection history</b><div id="log" class="muted">No detections yet.</div>
+</section>
+<p class="muted">Important: this is an early prototype, not a guaranteed predictor. If the ball is fully hidden, blurry, or visually similar to another red object, the result may be wrong. Test with several videos before relying on it.</p>
+<canvas id="work" hidden></canvas>
+</main>
+<script>
+const file=document.getElementById('file'), video=document.getElementById('video');
+const canvas=document.getElementById('work'), ctx=canvas.getContext('2d',{willReadFrequently:true});
+const statusEl=document.getElementById('status'), resultEl=document.getElementById('result');
+const detailEl=document.getElementById('detail'), logEl=document.getElementById('log');
+let objectUrl=null, scanning=false, entries=[];
+file.addEventListener('change',()=>{
+  if(objectUrl) URL.revokeObjectURL(objectUrl);
+  const f=file.files?.[0]; if(!f)return;
+  objectUrl=URL.createObjectURL(f); video.src=objectUrl;
+  statusEl.textContent='Video loaded. Press Analyze video.';
+  resultEl.textContent='No result yet'; logEl.textContent='No detections yet.'; entries=[];
+});
+document.getElementById('clear').onclick=()=>{
+ entries=[];logEl.textContent='No detections yet.';resultEl.textContent='No result yet';
+ detailEl.textContent='Choose a video and analyze it.';statusEl.textContent='Results cleared.';
+};
+function findRedBall(){
+ const scale=3, w=Math.max(1,Math.floor(video.videoWidth/scale)), h=Math.max(1,Math.floor(video.videoHeight/scale));
+ canvas.width=w;canvas.height=h;ctx.drawImage(video,0,0,w,h);
+ const data=ctx.getImageData(0,0,w,h).data, seen=new Uint8Array(w*h), blobs=[];
+ // Ignore top banner and bottom game controls; inspect the central play field.
+ const y0=Math.floor(h*.22), y1=Math.floor(h*.83), x0=Math.floor(w*.08), x1=Math.floor(w*.92);
+ for(let y=y0;y<y1;y++) for(let x=x0;x<x1;x++){
+   const i=y*w+x, p=i*4, r=data[p],g=data[p+1],b=data[p+2];
+   if(seen[i])continue;
+   if(!(r>135 && r>g*1.55 && r>b*1.35 && g<125))continue;
+   const stack=[i];seen[i]=1;let count=0,sx=0,sy=0,minX=x,maxX=x,minY=y,maxY=y;
+   while(stack.length){
+     const q=stack.pop(), qx=q%w,qy=(q/w)|0, qp=q*4;
+     count++;sx+=qx;sy+=qy;minX=Math.min(minX,qx);maxX=Math.max(maxX,qx);minY=Math.min(minY,qy);maxY=Math.max(maxY,qy);
+     const ns=[q-1,q+1,q-w,q+w];
+     for(const z of ns){
+       if(z<0||z>=w*h||seen[z])continue;
+       const zx=z%w,zy=(z/w)|0;if(zx<x0||zx>=x1||zy<y0||zy>=y1)continue;
+       const zp=z*4,Zr=data[zp],Zg=data[zp+1],Zb=data[zp+2];
+       if(Zr>135&&Zr>Zg*1.55&&Zr>Zb*1.35&&Zg<125){seen[z]=1;stack.push(z);}
+     }
+   }
+   if(count>=4&&count<=180)blobs.push({count,x:sx/count,y:sy/count,boxW:maxX-minX+1,boxH:maxY-minY+1});
+ }
+ if(!blobs.length)return null;
+ // A small, compact red blob is more ball-like than large red decorations.
+ blobs.sort((a,b)=> (a.count+Math.abs(a.boxW-a.boxH)*2)-(b.count+Math.abs(b.boxW-b.boxH)*2));
+ const b=blobs[0], px=b.x*scale, py=b.y*scale;
+ const side=px<video.videoWidth/3?'LEFT':px<video.videoWidth*2/3?'MIDDLE':'RIGHT';
+ return {side,x:Math.round(px),y:Math.round(py),area:b.count};
+}
+document.getElementById('scan').onclick=async()=>{
+ if(!video.src){statusEl.textContent='Please select a video first.';return}
+ if(scanning)return;
+ scanning=true;entries=[];logEl.textContent='';resultEl.textContent='Analyzing…';
+ const wasPlaying=!video.paused;video.pause();
+ const duration=video.duration||0, step=.12;
+ if(!duration){statusEl.textContent='Video is not ready yet.';scanning=false;return}
+ statusEl.textContent='Analyzing video frames…';
+ for(let t=0;t<duration;t+=step){
+   video.currentTime=Math.min(t,duration-.01);
+   await new Promise(resolve=>{const done=()=>{video.removeEventListener('seeked',done);resolve()};video.addEventListener('seeked',done);setTimeout(resolve,250)});
+   const found=findRedBall();
+   if(found){
+     const e={time:t.toFixed(1),...found};
+     const prev=entries[entries.length-1];
+     if(!prev||prev.side!==e.side||Math.abs(Number(prev.time)-t)>.8)entries.push(e);
+     resultEl.textContent=e.side;
+     detailEl.textContent=`Likely ball position at ${e.time}s · x=${e.x}px`;
+   }
+   statusEl.textContent=`Scanned ${Math.min(t+step,duration).toFixed(1)} / ${duration.toFixed(1)} seconds`;
+ }
+ logEl.innerHTML=entries.length?entries.map(e=>`<div>${e.time}s — <b>${e.side}</b> <span class="muted">(x ${e.x}px)</span></div>`).join(''):'No likely red ball found. Try a clearer video.';
+ if(!entries.length){resultEl.textContent='Not detected';detailEl.textContent='The ball may be hidden or the video colors may differ.'}
+ statusEl.textContent=`Finished. ${entries.length} position changes recorded.`;
+ if(wasPlaying)video.play();
+ scanning=false;
+};
+</script></body></html>
